@@ -229,7 +229,7 @@ func (e *Executor) execute(ctx context.Context, safeSession *SafeSession, sql st
 	case sqlparser.StmtRollback:
 		return e.handleRollback(ctx, safeSession, sql, bindVars, logStats)
 	case sqlparser.StmtSet:
-		return e.handleSet(ctx, safeSession, sql, bindVars, logStats)
+		return e.handleSet(ctx, safeSession, sql, bindVars, destKeyspace, logStats)
 	case sqlparser.StmtShow:
 		return e.handleShow(ctx, safeSession, sql, bindVars, dest, destKeyspace, destTabletType, logStats)
 	case sqlparser.StmtUse:
@@ -444,7 +444,7 @@ func (e *Executor) handleRollback(ctx context.Context, safeSession *SafeSession,
 	return &sqltypes.Result{}, err
 }
 
-func (e *Executor) handleSet(ctx context.Context, safeSession *SafeSession, sql string, bindVars map[string]*querypb.BindVariable, logStats *LogStats) (*sqltypes.Result, error) {
+func (e *Executor) handleSet(ctx context.Context, safeSession *SafeSession, sql string, bindVars map[string]*querypb.BindVariable, keyspace string, logStats *LogStats) (*sqltypes.Result, error) {
 	vals, scope, err := sqlparser.ExtractSetValues(sql)
 	execStart := time.Now()
 	logStats.PlanTime = execStart.Sub(logStats.StartTime)
@@ -464,6 +464,11 @@ func (e *Executor) handleSet(ctx context.Context, safeSession *SafeSession, sql 
 		if k.Scope == sqlparser.GlobalStr {
 			return &sqltypes.Result{}, vterrors.New(vtrpcpb.Code_INVALID_ARGUMENT, "unsupported in set: global")
 		}
+
+		if k.Scope == sqlparser.VitessMetadataStr {
+			return e.handleVitessMetadata(ctx, safeSession, keyspace, k, v)
+		}
+
 		switch k.Key {
 		case "autocommit":
 			val, err := validateSetOnOff(v, k.Key)
@@ -641,6 +646,39 @@ func (e *Executor) handleSet(ctx context.Context, safeSession *SafeSession, sql 
 			return nil, vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT, "unsupported construct: %s", sql)
 		}
 	}
+	return &sqltypes.Result{}, nil
+}
+
+func (e *Executor) handleVitessMetadata(ctx context.Context, session *SafeSession, ksName string, k sqlparser.SetKey, v interface{}) (*sqltypes.Result, error) {
+	val, ok := v.(string)
+	if !ok {
+		return nil, vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT, "unexpected value type for charset: %T", v)
+	}
+
+	vschema := e.vm.GetCurrentSrvVschema()
+	if vschema == nil {
+		return nil, vterrors.Errorf(vtrpcpb.Code_INTERNAL, "vschema not loaded")
+	}
+
+	allowed := vschemaacl.Authorized(callerid.ImmediateCallerIDFromContext(ctx))
+	if !allowed {
+		return nil, vterrors.Errorf(vtrpcpb.Code_PERMISSION_DENIED, "not authorized to perform vschema operations")
+
+	}
+
+	if _, ok = vschema.Keyspaces[ksName]; !ok {
+		return nil, vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT, "keyspace %s not in vschema", ksName)
+	}
+
+	ts, err := e.serv.GetTopoServer()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := ts.UpsertMetadata(ctx, ksName, k.Key, val); err != nil {
+		return nil, err
+	}
+
 	return &sqltypes.Result{}, nil
 }
 

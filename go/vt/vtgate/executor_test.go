@@ -468,6 +468,54 @@ func TestExecutorSet(t *testing.T) {
 		}
 	}
 }
+
+func TestExecutorSetMetadata(t *testing.T) {
+	*vschemaacl.AuthorizedDDLUsers = "%"
+	defer func() {
+		*vschemaacl.AuthorizedDDLUsers = ""
+	}()
+	executor, _, _, _ := createExecutorEnv()
+	session := NewSafeSession(&vtgatepb.Session{TargetString: KsTestUnsharded, Autocommit: true})
+
+	set := "set @@vitess_metadata.vschema_migrations= '1,2,3'"
+	_, err := executor.Execute(context.Background(), "TestExecute", session, set, nil)
+	if err != nil {
+		t.Errorf("%s error: %v", set, err)
+	}
+
+	ts, err := executor.serv.GetTopoServer()
+	if err != nil {
+		t.Error(err)
+	}
+
+	got, err := ts.GetMetadata(context.Background(), KsTestUnsharded, "vschema_migrations")
+	if err != nil {
+		t.Error(err)
+	}
+
+	want := "1,2,3"
+	if got != want {
+		t.Errorf("want migrations %s, got %s", want, got)
+	}
+
+	// Update metadata
+	set = "set @@vitess_metadata.vschema_migrations= '1,2,3,4,5'"
+	_, err = executor.Execute(context.Background(), "TestExecute", session, set, nil)
+	if err != nil {
+		t.Errorf("%s error: %v", set, err)
+	}
+
+	got, err = ts.GetMetadata(context.Background(), KsTestUnsharded, "vschema_migrations")
+	if err != nil {
+		t.Error(err)
+	}
+
+	want = "1,2,3,4,5"
+	if got != want {
+		t.Errorf("want migrations %s, got %s", want, got)
+	}
+}
+
 func TestExecutorAutocommit(t *testing.T) {
 	executor, _, _, sbclookup := createExecutorEnv()
 	session := NewSafeSession(&vtgatepb.Session{TargetString: "@master"})
