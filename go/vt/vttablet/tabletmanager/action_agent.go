@@ -337,6 +337,9 @@ func NewActionAgent(
 		go agent.orc.DiscoverLoop(agent)
 	}
 
+	// Start master repair job
+	startNewMasterRepairJob(ts, agent)
+
 	return agent, nil
 }
 
